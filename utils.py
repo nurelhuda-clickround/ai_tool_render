@@ -38,8 +38,8 @@ if os.path.exists(secret_path):
 
 
 if not os.getenv("OPENAI_API_KEY"):
-    st.error("OPENAI_API_KEY is missing at runtime.")
-    st.stop()
+    st.warning("OPENAI_API_KEY is missing at runtime. LLM features will be disabled until configured.")
+
 # Load environment variables from .env file
 # load_dotenv()
 
@@ -115,10 +115,24 @@ MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE")
 def get_llm(model: str = "gpt-4.1-nano", temperature: float = 0):
     # lazy import ChatOpenAI to avoid heavy import cost at module load
     from langchain_openai import ChatOpenAI
-    return ChatOpenAI(model=model, temperature=temperature)
+    global _LLM_SINGLETON
+    try:
+        if _LLM_SINGLETON is not None:
+            return _LLM_SINGLETON
+    except NameError:
+        _LLM_SINGLETON = None
+
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY not set; call get_llm() after configuring the key")
+
+    _LLM_SINGLETON = ChatOpenAI(model=model, temperature=temperature)
+    return _LLM_SINGLETON
 
 
-llm = get_llm()
+# Global LLM singleton (initialized lazily)
+_LLM_SINGLETON = None
+
+# llm = get_llm()
 
 # ---------- Index & embedding cache settings ----------
 INDEX_DIR = os.path.join("data", ".index")
@@ -480,7 +494,7 @@ def get_sqlite_tool(memory=None):
     db = SQLDatabase.from_uri("sqlite:///structured_data.db")
     system_message = SystemMessage(content=SYSTEM_PROMPT)
     sql_agent_executor = create_sql_agent(
-        llm=llm,
+        llm=get_llm(),
         db=db,
         agent_type=AgentType.OPENAI_FUNCTIONS,
         memory=memory,
@@ -558,7 +572,7 @@ def get_mysql_tool(memory=None, db_uri=None):
 
             system_message = SystemMessage(content=SYSTEM_PROMPT)
             sql_agent_executor = create_sql_agent(
-                llm=llm,
+                llm=get_llm(),
                 db=db,
                 agent_type=AgentType.OPENAI_FUNCTIONS,
                 memory=memory,
@@ -621,7 +635,7 @@ def get_retriever_tool(docs, metadata, memory=None):
         import faiss
         embedding = get_embedding_wrapper()
         retr = LocalRetriever(index=index, docs=docs_cached, metadata=meta_cached, embedder=embedding)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retr, memory=memory, return_source_documents=False)
+        qa_chain = RetrievalQA.from_chain_type(llm=get_llm(), retriever=retr, memory=memory, return_source_documents=False)
         return Tool(name="document_retriever", func=qa_chain.run, description="Document retriever (non-cached, per-session memory)")
 
     # memory is None -> safe to cache QA chain globally
@@ -634,7 +648,7 @@ def get_retriever_tool(docs, metadata, memory=None):
         import faiss
         embedding = get_embedding_wrapper()
         retr = LocalRetriever(index=index, docs=docs_cached, metadata=meta_cached, embedder=embedding)
-        qa = RetrievalQA.from_chain_type(llm=llm, retriever=retr, memory=None, return_source_documents=False)
+        qa = RetrievalQA.from_chain_type(llm=get_llm(), retriever=retr, memory=None, return_source_documents=False)
         qa._index_sig = index_hash
         return qa
 
@@ -673,7 +687,7 @@ def get_multi_agent(_, docs, metadata, db_uri=None, memory=None, conversation_hi
 
     return initialize_agent(
         tools=tools,
-        llm=llm,
+        llm=get_llm(),
         agent=AgentType.OPENAI_FUNCTIONS,
         memory=memory,
         verbose=True,
@@ -908,7 +922,7 @@ def determine_file_generation(query: str, conversation_history: str) -> tuple[bo
     - Query: "How many customers are there?" -> {{"generate_file": false, "file_format": null, "generate_chart": false}}
     """
     try:
-        response = llm.invoke(prompt)
+        response = get_llm().invoke(prompt)
         result = response.content.strip()
         result = re.sub(r'^```json\s*|\s*```$', '', result, flags=re.MULTILINE)
         result = result.strip()
